@@ -40,6 +40,7 @@
 from unicorn_binance_websocket_api.manager import BinanceWebSocketApiManager
 from unicorn_binance_websocket_api.exceptions import *
 from unicorn_binance_websocket_api.restclient import BinanceWebSocketApiRestclient
+from unicorn_binance_websocket_api.connection_settings import FUTURES_PRIVATE_STREAM_DEFAULT_EVENTS
 from unicorn_binance_rest_api import BinanceRestApiManager
 import asyncio
 import logging
@@ -493,6 +494,80 @@ class TestBinanceComManagerTest(unittest.TestCase):
         ubwam.api.spot.get_order(stream_id=api_stream, symbol="BUSDUSDT", orig_client_order_id=replaced_client_order_id)
         time.sleep(5)
         ubwam.stop_manager()
+
+
+class TestBinanceFuturesPrivateStreamUri(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        print(f"\r\nTestBinanceFuturesPrivateStreamUri:")
+        cls.ubwa_futures = BinanceWebSocketApiManager(exchange="binance.com-futures", disable_colorama=True)
+        cls.ubwa_futures_testnet = BinanceWebSocketApiManager(exchange="binance.com-futures-testnet",
+                                                              disable_colorama=True)
+        cls.ubwa_coin_futures = BinanceWebSocketApiManager(exchange="binance.com-coin_futures",
+                                                           disable_colorama=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ubwa_futures.stop_manager(delete_listen_key=False)
+        cls.ubwa_futures_testnet.stop_manager(delete_listen_key=False)
+        cls.ubwa_coin_futures.stop_manager(delete_listen_key=False)
+
+    def test_create_uri_userdata_regular_futures_private_ws_default_events(self):
+        stream_id = self.__class__.ubwa_futures.get_new_uuid_id()
+        self.__class__.ubwa_futures._add_stream_to_stream_list(
+            stream_id,
+            ["arr"],
+            ["!userData"],
+            provided_listen_key="testListenKey",
+        )
+        expected_events = "/".join(FUTURES_PRIVATE_STREAM_DEFAULT_EVENTS)
+        self.assertEqual(
+            self.__class__.ubwa_futures.create_websocket_uri(["arr"], ["!userData"], stream_id=stream_id),
+            f"wss://fstream.binance.com/private/ws?listenKey=testListenKey&events={expected_events}",
+        )
+
+    def test_create_uri_userdata_regular_futures_private_ws_custom_events(self):
+        stream_id = self.__class__.ubwa_futures.get_new_uuid_id()
+        self.__class__.ubwa_futures._add_stream_to_stream_list(
+            stream_id,
+            ["arr"],
+            ["!userData"],
+            provided_listen_key="testListenKey",
+            userdata_events=["ORDER_TRADE_UPDATE", "ACCOUNT_UPDATE"],
+        )
+        self.assertEqual(
+            self.__class__.ubwa_futures.create_websocket_uri(["arr"], ["!userData"], stream_id=stream_id),
+            "wss://fstream.binance.com/private/ws?listenKey=testListenKey"
+            "&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE",
+        )
+
+    def test_create_uri_userdata_regular_futures_testnet_private_ws(self):
+        stream_id = self.__class__.ubwa_futures_testnet.get_new_uuid_id()
+        self.__class__.ubwa_futures_testnet._add_stream_to_stream_list(
+            stream_id,
+            ["arr"],
+            ["!userData"],
+            provided_listen_key="testListenKey",
+            userdata_events=["ORDER_TRADE_UPDATE"],
+        )
+        self.assertEqual(
+            self.__class__.ubwa_futures_testnet.create_websocket_uri(["arr"], ["!userData"], stream_id=stream_id),
+            "wss://stream.binancefuture.com/private/ws?listenKey=testListenKey&events=ORDER_TRADE_UPDATE",
+        )
+
+    def test_create_uri_userdata_regular_coin_futures_private_ws(self):
+        stream_id = self.__class__.ubwa_coin_futures.get_new_uuid_id()
+        self.__class__.ubwa_coin_futures._add_stream_to_stream_list(
+            stream_id,
+            ["arr"],
+            ["!userData"],
+            provided_listen_key="testListenKey",
+            userdata_events=["ACCOUNT_UPDATE"],
+        )
+        self.assertEqual(
+            self.__class__.ubwa_coin_futures.create_websocket_uri(["arr"], ["!userData"], stream_id=stream_id),
+            "wss://dstream.binance.com/private/ws?listenKey=testListenKey&events=ACCOUNT_UPDATE",
+        )
 
 
 class TestApiLive(unittest.TestCase):

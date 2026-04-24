@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
   [How to upgrade to the latest version!](https://oliver-zehentleitner.github.io/unicorn-binance-websocket-api/readme.html#installation-and-upgrade)
 
 ## 2.12.2.dev (development stage/unreleased/unstable)
+### Changed
+- `!userData` streams on `binance.com-futures`, `binance.com-futures-testnet` and
+  `binance.com-coin_futures` now use Binance's April 2026 private stream URI format
+  (`/private/ws?listenKey=...&events=...`) instead of the legacy `/ws/<listenKey>` path.
+  The REST listenKey lifecycle is unchanged. Added optional `userdata_events` to
+  `create_stream()` for overriding the private event list; by default the full futures
+  private event set is requested to preserve broad compatibility.
 
 ## 2.12.2
 ### Changed

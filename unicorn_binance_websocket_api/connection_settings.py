@@ -107,3 +107,26 @@ USERDATA_WS_API_EXCHANGES = frozenset([
     Exchanges.BINANCE_ISOLATED_MARGIN,
     Exchanges.BINANCE_ISOLATED_MARGIN_TESTNET,
 ])
+
+# Futures private userData streams keep the REST listenKey lifecycle, but Binance moved the
+# websocket endpoint to `/private/ws?...` in April 2026.
+USERDATA_FUTURES_PRIVATE_STREAM_EXCHANGES = frozenset([
+    Exchanges.BINANCE_FUTURES,
+    Exchanges.BINANCE_FUTURES_TESTNET,
+    Exchanges.BINANCE_COIN_FUTURES,
+])
+
+# Default to the full U-futures private event set so existing `!userData` streams keep receiving
+# the broadest set of account/order updates after migrating to the new URI format.
+FUTURES_PRIVATE_STREAM_DEFAULT_EVENTS = (
+    "listenKeyExpired",
+    "ACCOUNT_UPDATE",
+    "MARGIN_CALL",
+    "ORDER_TRADE_UPDATE",
+    "TRADE_LITE",
+    "ACCOUNT_CONFIG_UPDATE",
+    "STRATEGY_UPDATE",
+    "GRID_UPDATE",
+    "CONDITIONAL_ORDER_TRIGGER_REJECT",
+    "ALGO_UPDATE",
+)

@@ -38,7 +38,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-from .connection_settings import CEX_EXCHANGES, CONNECTION_SETTINGS, USERDATA_WS_API_EXCHANGES
+from .connection_settings import (
+    CEX_EXCHANGES,
+    CONNECTION_SETTINGS,
+    USERDATA_WS_API_EXCHANGES,
+    USERDATA_FUTURES_PRIVATE_STREAM_EXCHANGES,
+    FUTURES_PRIVATE_STREAM_DEFAULT_EVENTS,
+)
 from .exceptions import *
 from .restclient import BinanceWebSocketApiRestclient
 from .sockets import BinanceWebSocketApiSocket
@@ -49,6 +55,7 @@ from collections import deque
 from datetime import datetime, timezone
 from operator import itemgetter
 from typing import Optional, Union, Callable, List, Set, Literal
+from urllib.parse import quote
 import asyncio
 import colorama
 import copy
@@ -654,7 +661,8 @@ class BinanceWebSocketApiManager(threading.Thread):
                                    api=False,
                                    process_stream_data: Optional[Callable] = None,
                                    process_stream_data_async: Optional[Callable] = None,
-                                   process_asyncio_queue: Optional[Callable] = None):
+                                   process_asyncio_queue: Optional[Callable] = None,
+                                   userdata_events=None):
         """
         Create a list entry for new streams
 
@@ -788,6 +796,7 @@ class BinanceWebSocketApiManager(threading.Thread):
                                            'processed_receives_statistic': {},
                                            'transfer_rate_per_second': {'bytes': {}, 'speed': 0},
                                            'websocket_uri': None,
+                                           'userdata_events': copy.deepcopy(userdata_events),
                                            'userData_type': None,
                                            'userdata_subscribe_id': None,
                                            '3rd-party-future': None}
@@ -955,6 +964,47 @@ class BinanceWebSocketApiManager(threading.Thread):
                 "signature": signature
             }
         }
+
+    @staticmethod
+    def _normalize_userdata_events(userdata_events) -> Optional[List[str]]:
+        """
+        Normalize optional futures private stream events to a stable list of non-empty strings.
+
+        :param userdata_events: One event string or an iterable of event strings.
+        :return: Normalized list or None.
+        """
+        if userdata_events is None:
+            return None
+
+        if isinstance(userdata_events, str):
+            normalized_events = [userdata_events]
+        else:
+            normalized_events = list(userdata_events)
+
+        result = []
+        for event in normalized_events:
+            event_str = str(event).strip()
+            if event_str and event_str not in result:
+                result.append(event_str)
+
+        return result or None
+
+    def _get_futures_private_userdata_events(self, stream_id: str) -> List[str]:
+        """
+        Return the configured or default private event list for futures `!userData` streams.
+        """
+        configured_events = self.stream_list[stream_id].get('userdata_events')
+        if configured_events is None:
+            return list(FUTURES_PRIVATE_STREAM_DEFAULT_EVENTS)
+        return list(configured_events)
+
+    def _build_futures_private_userdata_uri(self, stream_id: str, listen_key: str) -> str:
+        """
+        Build the Binance futures private stream URI introduced in April 2026.
+        """
+        events = self._get_futures_private_userdata_events(stream_id)
+        events_query = "/".join(quote(event, safe="") for event in events)
+        return f"{self.websocket_base_uri}private/ws?listenKey={quote(str(listen_key), safe='')}&events={events_query}"
 
     @staticmethod
     def order_params(data):
@@ -1540,7 +1590,8 @@ class BinanceWebSocketApiManager(threading.Thread):
                       api: bool = False,
                       process_stream_data: Optional[Callable] = None,
                       process_stream_data_async: Optional[Callable] = None,
-                      process_asyncio_queue: Optional[Callable] = None):
+                      process_asyncio_queue: Optional[Callable] = None,
+                      userdata_events: Union[str, List[str], Set[str], None] = None):
         """
         Create a websocket stream
 
@@ -1632,6 +1683,9 @@ class BinanceWebSocketApiManager(threading.Thread):
         :type keep_listen_key_alive: str
         :param listen_key: Provide the Binance listenKey for the userData stream.
         :type listen_key: str
+        :param userdata_events: Optional event names for futures private `!userData` streams. If omitted, the full
+                                default futures private event set is used with the new `/private/ws` URI.
+        :type userdata_events: str, list, set
         :param stream_buffer_maxlen: Set a max len for the `stream_buffer`. Only used in combination with a non-generic
                                      `stream_buffer`. The generic `stream_buffer` uses always the value of
                                      `BinanceWebSocketApiManager()`.
@@ -1687,6 +1741,7 @@ class BinanceWebSocketApiManager(threading.Thread):
         ping_interval = ping_interval or self.ping_interval_default
         ping_timeout = ping_timeout or self.ping_timeout_default
         provided_listen_key = listen_key
+        userdata_events = self._normalize_userdata_events(userdata_events)
         stream_id = self.get_new_uuid_id()
         markets_new = []
         if stream_buffer_name is True:
@@ -1721,7 +1776,8 @@ class BinanceWebSocketApiManager(threading.Thread):
                                         api=api,
                                         process_stream_data=process_stream_data,
                                         process_stream_data_async=process_stream_data_async,
-                                        process_asyncio_queue=process_asyncio_queue)
+                                        process_asyncio_queue=process_asyncio_queue,
+                                        userdata_events=userdata_events)
         self.set_socket_is_not_ready(stream_id)
         self.event_loops[stream_id] = None
         thread = threading.Thread(target=self._create_stream_thread,
@@ -1864,8 +1920,13 @@ class BinanceWebSocketApiManager(threading.Thread):
                         pass
                     if response:
                         try:
-                            uri = self.websocket_base_uri + "ws/" + str(response['listenKey'])
-                            uri_hidden = self.websocket_base_uri + "ws/" + self.replacement_text
+                            if self.exchange in USERDATA_FUTURES_PRIVATE_STREAM_EXCHANGES:
+                                uri = self._build_futures_private_userdata_uri(stream_id, response['listenKey'])
+                                uri_hidden = self._build_futures_private_userdata_uri(stream_id,
+                                                                                     self.replacement_text)
+                            else:
+                                uri = self.websocket_base_uri + "ws/" + str(response['listenKey'])
+                                uri_hidden = self.websocket_base_uri + "ws/" + self.replacement_text
                             if self.show_secrets_in_logs is True:
                                 logger.info("BinanceWebSocketApiManager.create_websocket_uri(" + str(channels) +
                                             ", " + str(markets) + ", " + str(symbols) + ") - result: " + uri)

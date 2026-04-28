@@ -38,6 +38,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
+from pandas.compat import F
 from .connection_settings import (
     CEX_EXCHANGES,
     CONNECTION_SETTINGS,
@@ -1003,8 +1004,9 @@ class BinanceWebSocketApiManager(threading.Thread):
         Build the Binance futures private stream URI introduced in April 2026.
         """
         events = self._get_futures_private_userdata_events(stream_id)
-        events_query = "/".join(quote(event, safe="") for event in events)
-        return f"{self.websocket_base_uri}private/ws?listenKey={quote(str(listen_key), safe='')}&events={events_query}"
+        encoded_key = quote(str(listen_key), safe='')
+        params = "&".join(f"listenKey={encoded_key}&events={quote(event, safe='')}" for event in events)
+        return f"{self.websocket_base_uri}private/stream?{params}"
 
     @staticmethod
     def order_params(data):

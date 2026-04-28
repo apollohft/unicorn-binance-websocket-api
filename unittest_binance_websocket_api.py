@@ -40,8 +40,10 @@
 from unicorn_binance_websocket_api.manager import BinanceWebSocketApiManager
 from unicorn_binance_websocket_api.exceptions import *
 from unicorn_binance_websocket_api.restclient import BinanceWebSocketApiRestclient
+from unicorn_binance_websocket_api.sockets import BinanceWebSocketApiSocket
 from unicorn_binance_websocket_api.connection_settings import FUTURES_PRIVATE_STREAM_DEFAULT_EVENTS
 from unicorn_binance_rest_api import BinanceRestApiManager
+from unittest.mock import MagicMock, AsyncMock, patch
 import asyncio
 import logging
 import unittest
@@ -886,3 +888,180 @@ if __name__ == '__main__':
         unittest.main()
     except KeyboardInterrupt:
         pass
+
+
+class TestListenKeyExpiredHandling(unittest.TestCase):
+    """Verify listenKeyExpired detection and auto-rotation for legacy userData streams."""
+
+    def _make_socket(self, output="dict"):
+        manager = MagicMock()
+        manager.stream_list = {
+            "test-stream": {
+                "status": "running",
+                "symbols": ["BTCUSDT"],
+                "output": output,
+                "api": False,
+                "api_key": "fake_api_key",
+                "api_secret": "fake_api_secret",
+                "ping_interval": 20,
+                "ping_timeout": 20,
+                "close_timeout": 10,
+                "userdata_subscribe_id": None,
+                "listen_key": "old-key-123",
+                "last_static_ping_listen_key": time.time(),
+                "exchange": "binance.com-futures",
+                "max_subscriptions_per_stream": 200,
+                "payload": [],
+                "stream_buffer_name": False,
+                "last_stream_signal": None,
+                "last_received_data_record": None,
+                "has_stopped": None,
+            }
+        }
+        manager.stream_list_lock = MagicMock()
+        manager.stream_list_lock.__enter__ = MagicMock(return_value=None)
+        manager.stream_list_lock.__exit__ = MagicMock(return_value=False)
+        manager.max_send_messages_per_second = 5
+        manager.max_send_messages_per_second_reserve = 2
+        manager.sockets = {}
+        manager.get_exchange = MagicMock(return_value="binance.com-futures")
+        manager.is_stop_request = MagicMock(return_value=False)
+        manager.is_crash_request = MagicMock(return_value=False)
+        manager.set_socket_is_ready = MagicMock()
+        manager.set_heartbeat = MagicMock()
+        manager.send_stream_signal = MagicMock()
+        manager.add_to_stream_buffer = MagicMock()
+        manager.websocket_base_uri = "wss://fstream.binance.com/"
+        manager.socks5_proxy_address = None
+        manager.socks5_proxy_port = None
+        manager.show_secrets_in_logs = False
+        manager.get_user_agent = MagicMock(return_value="test-agent")
+        manager.create_websocket_uri = MagicMock(return_value="wss://fstream.binance.com/ws/old-key-123")
+
+        socket = BinanceWebSocketApiSocket(manager, "test-stream", ["!userData"], ["!userData"])
+        socket.output = output
+        socket.exchange = "binance.com-futures"
+        return socket, manager
+
+    @patch("unicorn_binance_websocket_api.sockets.BinanceWebSocketApiConnection")
+    def test_listenkey_expired_clears_key_and_raises(self, mock_conn_cls):
+        """收到 listenKeyExpired 应清除 key 并抛出 StreamIsRestarting"""
+        mock_conn = MagicMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn_cls.return_value = mock_conn
+
+        socket, manager = self._make_socket()
+        call_count = 0
+        async def mock_receive():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return '{"e":"listenKeyExpired","E":123456}'
+            raise StreamIsRestarting(stream_id="test-stream", reason="test stop")
+
+        mock_conn.receive = mock_receive
+        mock_conn.send = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        async def run():
+            with self.assertRaises(StreamIsRestarting) as ctx:
+                await socket.start_socket()
+            self.assertIn("listenKeyExpired", str(ctx.exception))
+
+        asyncio.run(run())
+        self.assertIsNone(manager.stream_list["test-stream"]["listen_key"])
+        self.assertEqual(manager.stream_list["test-stream"]["last_static_ping_listen_key"], 0)
+
+    @patch("unicorn_binance_websocket_api.sockets.BinanceWebSocketApiConnection")
+    def test_listenkey_expired_already_cleared_ignored(self, mock_conn_cls):
+        """如果 listen_key 已经被清除，不应重复抛出 restart"""
+        mock_conn = MagicMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn_cls.return_value = mock_conn
+
+        socket, manager = self._make_socket()
+        manager.stream_list["test-stream"]["listen_key"] = None
+        manager.stream_list["test-stream"]["last_static_ping_listen_key"] = 0
+
+        call_count = 0
+        async def mock_receive():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return '{"e":"listenKeyExpired","E":123456}'
+            raise Exception("connection closed")
+
+        mock_conn.receive = mock_receive
+        mock_conn.send = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        async def run():
+            try:
+                await socket.start_socket()
+            except Exception:
+                pass
+
+        asyncio.run(run())
+        self.assertIsNone(manager.stream_list["test-stream"]["listen_key"])
+
+    @patch("unicorn_binance_websocket_api.sockets.BinanceWebSocketApiConnection")
+    def test_normal_message_not_affected(self, mock_conn_cls):
+        """普通消息不应触发 listenKeyExpired 处理"""
+        mock_conn = MagicMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn_cls.return_value = mock_conn
+
+        socket, manager = self._make_socket()
+        call_count = 0
+        async def mock_receive():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return '{"e":"ACCOUNT_UPDATE","E":123456}'
+            raise Exception("stop")
+
+        mock_conn.receive = mock_receive
+        mock_conn.send = AsyncMock()
+        mock_conn.close = AsyncMock()
+
+        async def run():
+            try:
+                await socket.start_socket()
+            except Exception:
+                pass
+
+        asyncio.run(run())
+        self.assertEqual(manager.stream_list["test-stream"]["listen_key"], "old-key-123")
+
+    def test_ping_listen_key_skips_when_none(self):
+        """_ping_listen_key 在 listen_key 为 None 时不应调用 keepalive"""
+        ubwa = BinanceWebSocketApiManager(exchange="binance.com-futures", disable_colorama=True)
+        stream_id = ubwa.get_new_uuid_id()
+        ubwa.stream_list[stream_id] = {
+            "status": "running",
+            "keep_listen_key_alive": True,
+            "listen_key": None,
+            "start_time": time.time() - 3600,
+            "listen_key_cache_time": 900,
+            "last_static_ping_listen_key": 0,
+            "markets": ["!userData"],
+            "channels": ["!userData"],
+        }
+        ubwa.restclient = MagicMock()
+        ubwa.restclient.keepalive_listen_key = MagicMock(return_value=(None, None))
+
+        async def run():
+            task = asyncio.create_task(ubwa._ping_listen_key(stream_id))
+            await asyncio.sleep(0.5)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(run())
+        ubwa.restclient.keepalive_listen_key.assert_not_called()
+        ubwa.stop_manager(delete_listen_key=False)

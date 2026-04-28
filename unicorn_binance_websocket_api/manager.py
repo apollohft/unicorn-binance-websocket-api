@@ -38,7 +38,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-from pandas.compat import F
 from .connection_settings import (
     CEX_EXCHANGES,
     CONNECTION_SETTINGS,
@@ -1229,6 +1228,7 @@ class BinanceWebSocketApiManager(threading.Thread):
                 and not self.stream_list[stream_id]['status'].startswith("crashed"):
             await asyncio.sleep(2)
             if self.stream_list[stream_id]['keep_listen_key_alive'] is True \
+                    and self.stream_list[stream_id].get('listen_key') is not None \
                     and (self.stream_list[stream_id]['start_time'] +
                          self.stream_list[stream_id]['listen_key_cache_time']) < time.time() \
                     and (self.stream_list[stream_id]['last_static_ping_listen_key'] +

@@ -164,6 +164,32 @@ class BinanceWebSocketApiSocket(object):
                                     raise StreamIsCrashing(stream_id=self.stream_id, reason=error_msg)
                                 continue
 
+                            # Handle listenKeyExpired for legacy userData streams.
+                            # When Binance expires the listen key, we clear the cached key so the
+                            # next reconnect fetches a fresh one via create_websocket_uri().
+                            if '"listenKeyExpired"' in received_stream_data_json:
+                                try:
+                                    msg = orjson.loads(received_stream_data_json)
+                                    if msg.get("e") == "listenKeyExpired" or msg.get("event") == "listenKeyExpired":
+                                        should_restart = False
+                                        with self.manager.stream_list_lock:
+                                            if self.manager.stream_list[self.stream_id].get('listen_key') is not None:
+                                                logger.warning(f"BinanceWebSocketApiSocket.start_socket("
+                                                               f"{str(self.stream_id)}) - listenKeyExpired received, "
+                                                               f"clearing cached listen_key and restarting stream.")
+                                                self.manager.stream_list[self.stream_id]['listen_key'] = None
+                                                self.manager.stream_list[self.stream_id]['last_static_ping_listen_key'] = 0
+                                                should_restart = True
+                                            else:
+                                                logger.debug(f"BinanceWebSocketApiSocket.start_socket("
+                                                             f"{str(self.stream_id)}) - listenKeyExpired received but "
+                                                             f"listen_key already cleared, ignoring stale event.")
+                                        if should_restart:
+                                            raise StreamIsRestarting(stream_id=self.stream_id,
+                                                                     reason="listenKeyExpired")
+                                except (orjson.JSONDecodeError, ValueError):
+                                    pass
+
                             if self.output == "UnicornFy":
                                 if self.manager.stream_list[self.stream_id]['api'] is False:
                                     if self.exchange == "binance.com":

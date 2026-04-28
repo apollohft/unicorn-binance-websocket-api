@@ -35,6 +35,14 @@ Tasks collected from codebase analysis (2026-04-01). Ordered by priority within 
 - Dropped Python 3.8 (EOL), minimum is now 3.9
 - Updated `setup.py`, `pyproject.toml`, `requirements.txt`, `environment.yml`, `meta.yaml`
 
+### [x] Handle `listenKeyExpired` for Futures legacy userData streams
+- Spot/Margin migrated to WS API signature flow (no listenKey).
+- Futures still uses REST listenKey; Binance pushes `listenKeyExpired` when the key expires.
+- Previous behavior: event treated as normal payload, stream reconnects with cached (expired) key.
+- Fix: `sockets.py` detects `listenKeyExpired`, clears cached `listen_key`, triggers `StreamIsRestarting`.
+- Guard `_ping_listen_key()` to skip keepalive when `listen_key` is None.
+- Added `test_listenkey_expired.py` with 4 unit tests.
+
 ### [ ] Add rate-limit backoff strategy (429 handling)
 - Currently: 429 response from Binance crashes the stream (`manager.py:_run_socket()`)
 - Implement exponential backoff before restart on 429
